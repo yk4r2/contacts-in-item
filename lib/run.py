@@ -5,6 +5,7 @@ import sys
 from typing import Tuple
 
 import pandas as pd
+
 from model import task1, task2
 
 
