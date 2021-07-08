@@ -2,4 +2,6 @@ data/train.csv
 lib/__pycache__/
 poetry.lock
 pyproject.toml
+lib/logreg_models/text_transformer*
+screenlog*
 

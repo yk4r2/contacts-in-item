@@ -24,4 +24,8 @@ WORKDIR $PROJECT_ROOT
 
 RUN pip install -r requirements.txt
 
+RUN sudo apt-get install xz-utils
+RUN wget https://www.dropbox.com/s/4lbyhjlotrz7nn6/text_transformer.tar.xz?dl=1 -O /app/lib/logreg_models/text_transformer.tar.xz
+RUN tar xf /app/lib/logreg_models/text_transformer.tar.xz /app/lib/logreg_models/text_transformer.pickle
+
 CMD python lib/run.py

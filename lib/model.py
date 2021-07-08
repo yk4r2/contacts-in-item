@@ -1,13 +1,13 @@
 """A simple loader for your Logistic Regression model in scikit-learn."""
-from pickle import load as pickle_load
 from dataclasses import dataclass
 from json import load as json_load
 from multiprocessing import cpu_count
-from typing import List
+from pickle import load as pickle_load
+from typing import List, Union
 
 from dataenforce import Dataset
-from numpy import array
-from numpy.typing import NDArray
+from numpy import array, empty
+from numpy.typing import ArrayLike
 from pandas import Series
 from scipy.sparse import csr, hstack
 from sklearn.base import RegressorMixin, TransformerMixin
@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score
 from tabulate import tabulate
 
 
-def model_loader(path: str) -> RegressorMixin:
+def pickle_model_loader(path: str) -> Union[RegressorMixin, TransformerMixin]:
     """Load your model from pickle. Might be insecure.
 
     Args:
@@ -28,7 +28,20 @@ def model_loader(path: str) -> RegressorMixin:
         return pickle_load(model_file)
 
 
-def description_cleaner(description: Series[str]) -> Series[str]:
+def safe_json_loader(path: str) -> dict:
+    """Load your dict from JSON.
+
+    Args:
+        path: A path to your dict.
+
+    Returns:
+        A dict.
+    """
+    with open(path, 'rb') as model_file:
+        return json_load(model_file)
+
+
+def description_cleaner(description: Series) -> Series:
     """Leave only literals and numerics in your description.
 
     Args:
@@ -41,7 +54,7 @@ def description_cleaner(description: Series[str]) -> Series[str]:
 
 
 def description_transformer(transformer: TransformerMixin,
-                            description: Series[str],
+                            description: Series,
                             ) -> csr.csr_matrix:
     """Transform your description using pre-loaded TF-iDF transformer.
 
@@ -50,7 +63,7 @@ def description_transformer(transformer: TransformerMixin,
         description: Series of string-descriptions.
 
     Returns:
-        Numpy's NDArray of TF-iDF vectorized strings.
+        Scipy's sparse matrix of TF-iDF vectorized strings.
     """
     return transformer.transform(description)
 
@@ -67,9 +80,9 @@ def categories_transformer(transformer: TransformerMixin,
         dataframe: a pandas Dataframe waiting to be vectorized.
 
     Returns:
-        Numpy's NDArray of DictVectorized category features strings.
+        Scipy's sparse matrix of DictVectorized category features strings.
     """
-    return transformer.fit_transform(dataframe[categories_list].to_dict('cat'))
+    return transformer.transform(dataframe[categories_list].to_dict('records'))
 
 
 def regexp_loader(path: str) -> dict:
@@ -85,7 +98,7 @@ def regexp_loader(path: str) -> dict:
         return json_load(json_file)
 
 
-def regexp_transformer(series: Series[str], regexps: dict) -> NDArray[int]:
+def regexp_transformer(series: Series, regexps: dict) -> ArrayLike:
     """Find the presence of regexps in your Series.
 
     Args:
@@ -95,14 +108,14 @@ def regexp_transformer(series: Series[str], regexps: dict) -> NDArray[int]:
     Returns:
         An NDArray with ints: 0 if there is no such a regexp, 1 else.
     """
-    columns = array(len(regexps), len(series))
+    columns = empty((len(regexps), len(series)), dtype=int)
     for index, (_, regexp) in enumerate(regexps.items()):
-        columns[index] = series.str.contains(regexp).astype(int)
-    return columns
+        columns[index] = series.str.contains(regexp).astype(int).values
+    return columns.T
 
 
-def auc_printer(predictions: NDArray,
-                labels: Series[int],
+def auc_printer(predictions: ArrayLike,
+                labels: Series,
                 model: RegressorMixin,
                 ) -> None:
     """Print your model's AUC.
@@ -133,21 +146,17 @@ class LogReg:
     dict_vectorizer: TransformerMixin = None
     logreg: RegressorMixin = None
     regexp_dict: dict = None
-    categories: List[str] = None
+    categories = ['subcategory', 'category', 'region', 'city']
     features: csr.csr_matrix = None
-    labels: Series[int] = None
-    predictions: NDArray = None
+    labels: Series = None
+    predictions: ArrayLike = None
 
     def load_models(self) -> None:
         """Load TF-iDF, DictVectorizer, Regexps and LogReg models."""
-        with open(self.tf_idf_path, 'rb') as tf_idf_file:
-            self.tf_idf = pickle_load(tf_idf_file)
-        with open(self.dict_vectorizer_path, 'rb') as dict_vectorizer_file:
-            self.dict_vectorizer = pickle_load(dict_vectorizer_file)
-        with open(self.regexp_dict_path, 'rb') as regexps_json:
-            self.regexp_dict = json_load(regexps_json)
-        with open(self.logreg_path, 'rb') as logreg_file:
-            self.logreg = pickle_load(logreg_file)
+        self.tf_idf = pickle_model_loader(self.tf_idf_path)
+        self.dict_vectorizer = pickle_model_loader(self.dict_vectorizer_path)
+        self.logreg = pickle_model_loader(self.logreg_path)
+        self.regexp_dict = safe_json_loader(self.regexp_dict_path)
         self.logreg.n_jobs = cpu_count()
 
     def prepare_dataset(self) -> None:
@@ -164,8 +173,46 @@ class LogReg:
 
     def predict(self) -> None:
         """Simply predict probabilities on given dataset."""
-        self.predictions = self.logreg.predict_proba(self.data)
+        self.predictions = self.logreg.predict_proba(self.features)
 
     def print_metrics(self) -> None:
         """Print AUC for the predictions."""
         auc_printer(self.predictions, self.labels, self.logreg)
+
+    def run_model(self) -> Series:
+        """Full model pipeline.
+
+        Returns:
+            Series[float]: probabilities of is_bad=True prediction.
+        """
+        self.load_models()
+        self.prepare_dataset()
+        self.predict()
+        return self.predictions
+
+
+def task1(test: Dataset) -> Series:
+    """Run model on the given config.
+
+    Should've been json reading in here but who cares.
+
+    Args:
+        test: a DataFrame we want to infer our models on.
+
+    Returns:
+        Series[float]: probabilities of is_bad=True prediction.
+    """
+    path_to_models = '/app/lib/logreg_models'
+    logistic_regression_model = LogReg(
+        dataset=test,
+        tf_idf_path='{0}/text_transformer.pickle'.format(path_to_models),
+        dict_vectorizer_path='{0}/cat_transformer.pickle'.format(path_to_models),
+        regexp_dict_path='{0}/regexps/regexp.json'.format(path_to_models),
+        logreg_path='{0}/logreg.pickle'.format(path_to_models),
+    )
+    return logistic_regression_model.run_model()
+
+
+def task2():
+    """An empty function just to exist."""
+    pass
