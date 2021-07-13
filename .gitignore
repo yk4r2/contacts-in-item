@@ -1,7 +1,10 @@
 data/train.csv
+data/None_*
 lib/__pycache__/
+lib/lstm
+lib/models/text_transformer*
+lib/word2vec
 poetry.lock
 pyproject.toml
-lib/logreg_models/text_transformer*
 screenlog*
 
