@@ -1,257 +1,228 @@
 """A simple loader for your Logistic Regression model in scikit-learn."""
+from collections import OrderedDict
 from dataclasses import dataclass
+from functools import lru_cache
 from json import load as json_load
-from multiprocessing import cpu_count
-from pickle import load as pickle_load
-from typing import Dict, List, Tuple, Union
+import re
+from typing import Dict, List, Union
 
-from dataenforce import Dataset
+from catboost import CatBoostClassifier
+from nltk.corpus import stopwords
 from numpy import empty, zeros
-from numpy.typing import ArrayLike
-from pandas import Series
-from scipy.sparse import csr, hstack
-from sklearn.base import RegressorMixin, TransformerMixin
-from sklearn.metrics import roc_auc_score
-from tabulate import tabulate
-from transliterate import translit
+from pandarallel import pandarallel
+from pandas import concat, DataFrame, read_csv, Series
+from pymorphy2 import MorphAnalyzer
 
 
-def pickle_model_loader(path: str) -> Union[RegressorMixin, TransformerMixin]:
-    """Load your model from pickle. Might be insecure.
-
-    Args:
-        path: A path to your model.
-
-    Returns:
-        A model in sklearn format.
-    """
-    with open(path, 'rb') as model_file:
-        return pickle_load(model_file)
-
-
-def safe_json_loader(path: str) -> dict:
+def safe_json_loader(path: str) -> Union[Dict, List]:
     """Load your dict from JSON.
 
     Args:
         path: A path to your dict.
 
     Returns:
-        A dict.
+        A dict or a list from your json.
     """
-    with open(path, 'rb') as model_file:
-        return json_load(model_file)
+    with open(path) as model_file:
+        json = json_load(model_file)
+        model_file.close()
+    return json
 
 
-def description_cleaner(description: Series) -> Series:
-    """Leave only literals and numerics in your description.
+def clean_string(string: str) -> str:
+    """Clean the junk from the string.
 
     Args:
-        description: Series of dirty descriptions.
+        string: a string to clean.
 
     Returns:
-        A description with filtered punctuation.
+        cleaned string.
     """
-    return description.replace(r'[\W_]+', ' ', regex=True).str.lower()
+    string = re.sub(r'[^0-9a-zA-Zа-яА-ЯёЁ\.,\(\)]+', ' ', string)
+    string = re.sub(r'([^\w ])', r' \1', string)
+    string = re.sub(r'([^ \w])', r'\1', string)
+    string = re.sub(r' +', r' ', string)
+    string = re.sub(r'^ ', r'', string)
+    string = re.sub(r'[\W_]+', ' ', string)
+    return string.lower()
 
 
-def description_transformer(
-    transformer: TransformerMixin,
-    description: Series,
-) -> csr.csr_matrix:
-    """Transform your description using pre-loaded TF-iDF transformer.
+def find_from_dict(searcher: Dict[str, str], string: str) -> List[int]:
+    """Find the presence of regex patterns in your string.
 
     Args:
-        transformer: TF-iDF transformer,
-        description: Series of string-descriptions.
+        searcher: OrderedDict name of regex -> regex to find,
+        string: string to search.
 
     Returns:
-        Scipy's sparse matrix of TF-iDF vectorized strings.
+        list of ints: 0 if no regexp, 1 else.
     """
-    return transformer.transform(description)
+    occurrences = []
+    for regexp in searcher.values():
+        occurrences.append(int(bool(re.search(regexp, string))))
+    return occurrences
 
 
-def categories_transformer(
-    transformer: TransformerMixin,
-    categories_list: List[str],
-    dataframe: Dataset,
-) -> csr.csr_matrix:
-    """Transform categorial features using DictVectorizer from scipy.
+def occurrences_to_dataframe(
+    occurrences: List[int],
+    regexes: Dict[str, str],
+) -> DataFrame:
+    """Helper function to turn your occurrences list to a DataFrame.
 
     Args:
-        transformer: DictVectorizer,
-        categories_list: List of category features,
-        dataframe: a pandas Dataframe waiting to be vectorized.
+        occurrences: list of regex patterns presence,
+        regexes: OrderedDict name of regex -> regex to find.
 
     Returns:
-        Scipy's sparse matrix of DictVectorized category features strings.
+        DataFrame: name of regex -> its occurrence.
     """
-    return transformer.transform(dataframe[categories_list].to_dict('records'))
+    return DataFrame((regex for regex in occurrences), columns=regexes.keys())
 
 
-def regexp_transformer(series: Series, regexps: dict) -> ArrayLike:
-    """Find the presence of regexps in your Series.
+def replace_from_dict(replacer: Dict[str, str], string: str) -> str:
+    """Replace all the regex patterns in your string.
 
     Args:
-        series: a pandas Series of strings,
-        regexps: a dict with {regexp name: regexp string}.
+        replacer: name of regex -> regex to replace,
+        string: string to clean.
 
     Returns:
-        ArrayLike (numpy array) with ints: 0 if there is no such a regexp, 1 else.
+        string with replaced regexes.
     """
-    columns = empty((len(regexps), len(series)), dtype=int)
-    for index, (_, regexp) in enumerate(regexps.items()):
-        columns[index] = series.str.contains(regexp).astype(int).values
-    return columns.T
+    for cyrillic, symbol in replacer.items():
+        string = re.sub(cyrillic, str(symbol), string)
+    return string
 
 
-def auc_printer(
-    predictions: ArrayLike,
-    labels: Series,
-    model: RegressorMixin,
-) -> None:
-    """Print your model's AUC.
+@lru_cache(maxsize=100000)
+def lemmatizer(word: str, morph) -> str:
+    """Get the normal form of the passed word.
+
+    Uses lru_cache to speed up the computations.
 
     Args:
-        predictions: predicted by model labels,
-        labels: ground truth labels,
-        model: model that predicted labels. Used to get its name.
-    """
-    headers = ['Model', 'Metric', 'Value']
-    table = []
-    model_name = type(model).__name__
-    roc_auc = roc_auc_score(labels, predictions)
-    table.append([model_name, 'AUC', roc_auc])
-    print(tabulate(table, headers=headers, tablefmt='orgtbl'))
-
-
-def transliterate_word(word: str) -> str:
-    """Get simple word transliteration.
-
-    Args:
-        word: word to transliterate (in cyrillic symbols).
+        word: word to find the normal form,
+        morph: MorphAnalyzer,
 
     Returns:
-        word transliteration RU -> ENG.
+        normal form of the word.
     """
-    return translit(word.lower().replace(' ', '_'), 'ru', reversed=True)
+    return morph.parse(word)[0].normal_form
 
 
-def transliterate_list(words: List[str]) -> List[str]:
-    """Get transliteration RU -> ENG and replaces some elements.
+def process_text(text: str, stopwords_set: set, morph) -> str:
+    """Clean and lemmatize your text.
 
     Args:
-        words: words list to transliterate.
+        text: text to lemmatize,
+        stopwords_set: your stopwords to get rid of,
+        morph: MorphAnalyzer, a pymorphy2 class.
 
     Returns:
-        List of transliterated words.
+        cleaned and lemmatized text without stop words.
     """
-    return list(map(transliterate_word, words))
-
-
-def splitted_predictor(
-    models: Dict[str, RegressorMixin],
-    dataset: Dataset,
-    features: csr.csr_matrix,
-    categories_names: List[Tuple[str, str]],
-) -> List[float]:
-    """Predicts by category in dataset.
-
-    Args:
-        dataset: dataset to make category mask.
-        models: predictors dict.
-        features: sample to predict.
-        categories_names: transliteration of russian names to english.
-
-    Returns:
-        List[float]: probability that label is equal to 1.
-    """
-    labels_predicted = zeros(len(dataset))
-    for category in list(zip(*categories_names))[0]:
-        model = models[category]
-        category_mask = dataset['category'] == category
-        features_used = features[category_mask]
-        # [:, 1] Because scikit-learn predict_proba returns probability of 0
-        # along with probability of 1, but we need only 1's.
-        labels_predicted[category_mask] = model.predict_proba(features_used)[:, 1]
-    return labels_predicted
+    text = clean_string(str(text)).split()
+    text = [
+        word for word in text
+        if word not in stopwords_set
+    ]
+    return ' '.join(map(lambda word: lemmatizer(word, morph), text))
 
 
 @dataclass
-class LogReg:
-    """Logistic Regression class."""
+class CatBoost:
+    """CatBoostClassifier wrapper."""
 
-    dataset: Dataset
-    tf_idf_path: str
-    dict_vectorizer_path: str
-    regexp_dict_path: str
-    logregs_path: str
-    tf_idf: TransformerMixin = None
-    dict_vectorizer: TransformerMixin = None
-    logregs: Dict[str, RegressorMixin] = None
-    regexp_dict: dict = None
-    categories = ['subcategory', 'category', 'region', 'city']
-    features: csr.csr_matrix = None
-    labels: Series = None
-    predictions: ArrayLike = None
-    categories_names: List[Tuple[str, str]] = None
+    dataset: DataFrame
+    regexes_path: str
+    punctuation_path: str
+    catboost_path: str
+    stopwords_path: str
+    junk = [
+        'title',
+        'description',
+        'category',
+        'subcategory',
+        'price',
+        'region',
+        'city',
+        'datetime_submitted',
+    ]
+    predictions: DataFrame = None
+    stopwords: set = None
+    regexes: Dict[str, str] = None
+    model: CatBoostClassifier = None
+    punctuation: Dict[str, str] = None
 
-    def load_logregs(self) -> None:
-        """Load all the LogReg models."""
-        logregs_loaded = {}
-        for category, eng_name in self.categories_names:
-            model_path = '/{0}/{1}.pickle'.format(self.logregs_path, eng_name)
-            logreg = pickle_model_loader(model_path)
-            logreg.n_jobs = cpu_count()
-            logregs_loaded[category] = logreg
-        self.logregs = logregs_loaded
+    def load_regexes_and_punctuation(self) -> None:
+        """Load your regexes and punctuation dictionaries."""
+        self.regexes = safe_json_loader(self.regexes_path)
+        self.punctuation = safe_json_loader(self.punctuation_path)
 
-    def categories_with_transliteration(self):
-        """Get transliterated categories for dataset. Used for file naming."""
-        categories = self.dataset['category'].unique()
-        categories_transliterated = transliterate_list(categories)
-        self.categories_names = list(zip(categories, categories_transliterated))
-
-    def load_transformers(self) -> None:
-        """Load TF-iDF, DictVectorizer, Regexps and LogReg models."""
-        self.tf_idf = pickle_model_loader(self.tf_idf_path)
-        self.dict_vectorizer = pickle_model_loader(self.dict_vectorizer_path)
-        self.regexp_dict = safe_json_loader(self.regexp_dict_path)
+    def get_stopwords(self) -> None:
+        """Get your stopwords set."""
+        additional_stopwords = safe_json_loader(self.stopwords_path)
+        self.stopwords = set(additional_stopwords)
+        self.stopwords.update(stopwords.words('russian'))
+        self.stopwords.update(stopwords.words('english'))
 
     def prepare_dataset(self) -> None:
-        """TF-iDF the description, DictVectorize category variables and find regexps."""
-        clean_description = description_cleaner(self.dataset['description'])
-        description = description_transformer(self.tf_idf, clean_description)
-        category = categories_transformer(
-            self.dict_vectorizer, self.categories, self.dataset,
+        """Prepare your dataset.
+
+        Clean your dataset, replace punctuation, replace regexes, lemmatize,
+        concatenate description and title, remove waste columns.
+        """
+        morph = MorphAnalyzer()
+
+        regexp_occurrences = self.dataset.description.parallel_apply(
+            lambda string: find_from_dict(self.regexes, string)
         )
-        regexps = regexp_transformer(clean_description, self.regexp_dict)
-        self.features = hstack([description, category, regexps], format='csr')
-        self.categories_with_transliteration()
+        regexp_occurrences = occurrences_to_dataframe(regexp_occurrences, self.regexes)
+        self.dataset = concat([self.dataset, regexp_occurrences], axis=1)
+
+        self.dataset['title_and_description'] = self.dataset.title.fillna('') + ' ' \
+            + self.dataset.description.fillna('')
+
+        self.dataset.title_and_description = \
+            self.dataset.title_and_description.parallel_apply(
+                lambda string: replace_from_dict(self.punctuation, string)
+            )
+        self.dataset.title_and_description = \
+            self.dataset.title_and_description.parallel_apply(
+                lambda string: process_text(string, self.stopwords, morph)
+            )
+        self.dataset.drop(self.junk, axis=1, inplace=True)
+
+    def load_model(self) -> None:
+        """Load the catboost model."""
+        self.model = CatBoostClassifier().load_model(self.catboost_path)
 
     def predict(self) -> None:
         """Simply predict probabilities on given dataset."""
-        self.predictions = splitted_predictor(
-            self.logregs, self.dataset, self.features, self.categories_names,
+        self.predictions = self.model.predict_proba(self.dataset)[:, 1]
+        indices = range(len(self.predictions))
+        self.predictions = DataFrame(
+            zip(indices, self.predictions),
+            columns=['index', 'prediction'],
         )
 
-    def print_metrics(self) -> None:
-        """Print AUC for the predictions."""
-        auc_printer(self.predictions, self.labels, self.logreg)
-
-    def run_model(self) -> List[float]:
+    def run_model(self) -> DataFrame:
         """Full model pipeline.
 
         Returns:
-            Series[float]: probabilities of is_bad=True prediction.
+            Series: probabilities of is_bad=True prediction.
         """
-        self.load_transformers()
+        # initialize pandarallel to speed up the computation
+        pandarallel.initialize(progress_bar=False)
+        self.load_regexes_and_punctuation()
+        self.load_model()
+        self.get_stopwords()
         self.prepare_dataset()
-        self.load_logregs()
         self.predict()
         return self.predictions
 
 
-def task1(test: Dataset) -> List[float]:
+def task1(test: DataFrame) -> DataFrame:
     """Run model on the given config.
 
     Should've been json reading in here but who cares.
@@ -260,17 +231,17 @@ def task1(test: Dataset) -> List[float]:
         test: a DataFrame we want to infer our models on.
 
     Returns:
-        Series[float]: probabilities of is_bad=True prediction.
+        DataFrame: probabilities of is_bad=True prediction.
     """
     path_to_models = '/app/lib/models'
-    logistic_regression_model = LogReg(
+    catboost = CatBoost(
         dataset=test,
-        tf_idf_path='{0}/text_transformer.pickle'.format(path_to_models),
-        dict_vectorizer_path='{0}/cat_transformer.pickle'.format(path_to_models),
-        regexp_dict_path='{0}/regexps/regexp.json'.format(path_to_models),
-        logregs_path='{0}/logregs'.format(path_to_models),
+        punctuation_path='{0}/regexps/punctuation.json'.format(path_to_models),
+        regexes_path='{0}/regexps/regexp.json'.format(path_to_models),
+        catboost_path='{0}/catboost_classifier.cbm'.format(path_to_models),
+        stopwords_path='{0}/stopwords.json'.format(path_to_models),
     )
-    return logistic_regression_model.run_model()
+    return catboost.run_model()
 
 
 def task2():

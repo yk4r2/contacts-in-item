@@ -23,11 +23,6 @@ COPY . $PROJECT_ROOT
 WORKDIR $PROJECT_ROOT
 
 RUN pip install -r requirements.txt
-
-RUN apt-get update && apt-get -qq -y install xz-utils wget vim
-RUN wget -q https://www.dropbox.com/s/4lbyhjlotrz7nn6/text_transformer.tar.xz?dl=1 \
-    -O $PROJECT_ROOT/lib/models/text_transformer.tar.xz
-RUN tar xf $PROJECT_ROOT/lib/models/text_transformer.tar.xz \
-    -C $PROJECT_ROOT/lib/models/
+RUN python -m nltk.downloader stopwords
 
 CMD python lib/run.py

@@ -137,9 +137,7 @@ class Test:
     def process(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         test = self.test()
 
-        task1_prediction = pd.DataFrame(columns=['index', 'prediction'])
-        task1_prediction['index'] = test.index
-        task1_prediction['prediction'] = task1(test)
+        task1_prediction = task1(test)
 
         task2_prediction = pd.DataFrame(columns=['index', 'start', 'finish'])
         task2_prediction['index'] = test.index
