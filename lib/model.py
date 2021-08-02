@@ -1,4 +1,4 @@
-"""A simple loader for your Logistic Regression model in scikit-learn."""
+"""A simple loader for your CatBoost Classifier model."""
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
@@ -138,16 +138,6 @@ class CatBoost:
     punctuation_path: str
     catboost_path: str
     stopwords_path: str
-    junk = [
-        'title',
-        'description',
-        'category',
-        'subcategory',
-        'price',
-        'region',
-        'city',
-        'datetime_submitted',
-    ]
     predictions: DataFrame = None
     stopwords: set = None
     regexes: Dict[str, str] = None
@@ -191,7 +181,19 @@ class CatBoost:
             self.dataset.title_and_description.parallel_apply(
                 lambda string: process_text(string, self.stopwords, morph)
             )
-        self.dataset.drop(self.junk, axis=1, inplace=True)
+
+        self.dataset['text'] = self.dataset.title_and_description.parallel_apply(
+            lambda string: re.sub('[^A-Za-z0-9\.\@\ \-\_]', ' ', string)
+        )
+        self.dataset['text'] = self.dataset['text'].parallel_apply(
+            lambda string: re.sub(' +', ' ', string)
+        )
+        self.dataset['numbers'] = self.dataset.title_and_description.parallel_apply(
+            lambda string: re.sub('[^0-9\+\(\)\-]', ' ', string)
+        )
+        self.dataset['numbers'] = self.dataset['numbers'].parallel_apply(
+            lambda string: re.sub(' +', ' ', string)
+        )
 
     def load_model(self) -> None:
         """Load the catboost model."""
@@ -218,6 +220,7 @@ class CatBoost:
         self.load_model()
         self.get_stopwords()
         self.prepare_dataset()
+        self.dataset = self.dataset[self.model.feature_names_]
         self.predict()
         return self.predictions
 

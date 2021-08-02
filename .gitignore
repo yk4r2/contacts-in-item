@@ -4,8 +4,7 @@ data/None_*
 lib/__pycache__/
 lib/.ipynb_checkpoints/
 lib/lstm
-lib/models/text_transformer*
-lib/word2vec
+lib/models/catboost*
 notebooks/.ipynb_checkpoints/
 notebooks/catboost_info/
 poetry.lock

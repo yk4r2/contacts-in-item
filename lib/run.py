@@ -107,7 +107,7 @@ class Test:
         return df
 
     def test(self) -> pd.DataFrame:
-        path = os.path.join(self.test_data_dir, self.val_csv if self.debug else self.test_csv)
+        path = os.path.join(self.data_dir, self.val_csv if self.debug else self.test_csv)
         if not os.path.exists(path):
             self.logger.info(f'Файл {path} не найден')
             raise ValueError('test не найден')
