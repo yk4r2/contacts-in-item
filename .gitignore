@@ -4,7 +4,7 @@ data/None_*
 lib/__pycache__/
 lib/.ipynb_checkpoints/
 lib/lstm
-lib/models/catboost*
+lib/models/catboost*.cbm
 notebooks/.ipynb_checkpoints/
 notebooks/catboost_info/
 poetry.lock

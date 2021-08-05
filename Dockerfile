@@ -26,7 +26,6 @@ WORKDIR $PROJECT_ROOT
 RUN apt-get update && apt-get -qq -y install xz-utils
 
 ADD lib/models/catboost_classifier.tar.xz lib/models
-RUN ls -la /app/lib/models
 
 RUN pip install -r requirements.txt
 RUN python -m nltk.downloader stopwords
