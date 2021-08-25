@@ -5,6 +5,7 @@ import sys
 from typing import Tuple
 
 import pandas as pd
+
 from model import task1, task2
 
 
@@ -106,7 +107,7 @@ class Test:
         return df
 
     def test(self) -> pd.DataFrame:
-        path = os.path.join(self.test_data_dir, self.val_csv if self.debug else self.test_csv)
+        path = os.path.join(self.data_dir, self.val_csv if self.debug else self.test_csv)
         if not os.path.exists(path):
             self.logger.info(f'Файл {path} не найден')
             raise ValueError('test не найден')
@@ -136,15 +137,11 @@ class Test:
     def process(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         test = self.test()
 
-        task1_prediction = pd.DataFrame(columns=['index', 'prediction'])
-        task1_prediction['index'] = test.index
-        task1_prediction['prediction'] = test['title'].apply(task1)
+        task1_prediction = task1(test)
 
         task2_prediction = pd.DataFrame(columns=['index', 'start', 'finish'])
         task2_prediction['index'] = test.index
-        task2_prediction[['start', 'finish']] = test['description'].apply(
-            lambda x: pd.Series(task2(x)),
-        )
+        task2_prediction[['start', 'finish']] = 0, 0
 
         return task1_prediction, task2_prediction
 
